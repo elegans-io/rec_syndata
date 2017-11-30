@@ -29,10 +29,13 @@ If no features are in common between `user1` and `user2`, the latter is extracte
 ```python3
 from synthetic_data import make_observations
 n_users = 100
+user_features = [5, 4]  # two users' features with 5 and 4 values resp.
 n_items = 100
+n_categories = 10
+bias = 5 
 n_observations = 10000
-sim = 11
-dis = 13
-observations = make_observations(n_users=n_users, n_items=n_items, n_observations=n_observations, sim=sim, dis=dis, bias=int(sim/2))
-write_dataset(n_users, n_items, observations)
+observations, users = make_observations(n_users=n_users, user_features=user_features, n_items=n_items, n_categories=n_categories, n_observations=n_observations, bias=bias)
+# write to file
+from synthetic_data import write_dataset
+write_dataset(users, n_items, n_categories, observations)
 ```

@@ -1,3 +1,4 @@
+
 from typing import List, Tuple
 from synthetic_data.utils import *
 
@@ -5,7 +6,7 @@ from synthetic_data.utils import *
 
 def make_observations(n_users: int, user_features: List[int],
                       n_items: int, n_categories: int,
-                      n_observations: int, sim: int, bias: int) -> List[Tuple]:
+                      n_observations: int,  bias: int) -> (List[Tuple], List[Tuple]):
     """Produce a list of observations --users who "buy" items.
 
     Both users and items follow a simple power-law distribution.
@@ -22,8 +23,7 @@ n_items = 100
 n_categories = 10
 bias = 5 
 n_observations = 10000
-sim = 11
-observations = make_observations(n_users=n_users, user_features=user_features, n_items=n_items, n_categories=n_categories, n_observations=n_observations, sim=sim, bias=bias)
+observations, users = make_observations(n_users=n_users, user_features=user_features, n_items=n_items, n_categories=n_categories, n_observations=n_observations, bias=bias)
 ```
     
     :param int n_users: Number of users
