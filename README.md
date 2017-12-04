@@ -32,7 +32,7 @@ n_users = 100
 user_features = [5, 4]  # two users' features with 5 and 4 values resp.
 n_items = 100
 n_categories = 10
-bias = 5 
+bias = 50 
 n_observations = 10000
 observations, users = make_observations(n_users=n_users, user_features=user_features, n_items=n_items, n_categories=n_categories, n_observations=n_observations, bias=bias)
 # write to file

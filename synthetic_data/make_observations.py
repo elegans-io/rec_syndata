@@ -1,8 +1,10 @@
-
+import math
 from typing import List, Tuple
 from synthetic_data.utils import *
 
 # Created by Mario Alemi 29 November 2017
+
+observations = {}
 
 def make_observations(n_users: int, user_features: List[int],
                       n_items: int, n_categories: int,
@@ -35,71 +37,102 @@ observations, users = make_observations(n_users=n_users, user_features=user_feat
     :return List[Tuple3]: list of observations (user_id, item_id, timestamp)
 
     """
+    global observations
     
     users = make_users(n_users, user_features)
-    observations = []
-    get_user_from_int = {}
-    u_count = 0
-    for u in range(0, n_users):
-        for _ in range(0, u):
-            get_user_from_int[u_count] = n_users - 1 - u
-            u_count += 1
-            
-    get_item_from_int = {}
-    i_count = 0
-    for i in range(0, n_items):
-        for _ in range(0, i):
-            get_item_from_int[i_count] = n_items - 1 - i
-            i_count += 1
 
-    for o in range(0, int(n_observations/2)):
-        user1 = get_user_from_int[random.randint(0, u_count-1)]
-        user2 = get_user_from_int[random.randint(0, u_count-1)]
-        item1 = get_item_from_int[random.randint(0, i_count-1)]
-        item2 = get_item_from_int[random.randint(0, i_count-1)]
+    def random_user(u=None):
+        return random.choices(range(n_users), weights=user_probability_weights[u])[0]
 
-        # let's see if we can have the "very similar one" (id = id + n_categories).
-        # This means that, given 7 categories, after book 1 people tend to buy 8, after 8 go for 15 and so on till no more book
 
-        if item1 + n_categories <= n_items - 1:
-            trials = 0
-            while (item2 != item1 + n_categories) and trials < bias:
-                # ...we give one more chance...
-                item2 = get_item_from_int[random.randint(0, i_count-1)]
-                trials += 1
+    # Get a sold item, but not if already sold that user
+    def sell(user_id):
+        '''
+        :return int item_id: -1 if the user has already bought all items...
+        '''
+        sold = [i_t[0] for i_t in observations.get(user_id, [(None, None)])]
+        # No reselling
+        weights = [w if i not in sold else 0 for i, w in enumerate(item_probability_weights[user_id])]
+        if sum(weights) == 0:
+            return -1
+        else:
+            return random.choices(population=range(n_items), weights=weights)[0]
 
-        # ...if not the very similar one, at least same category?
-        trials = 0
-        while (item1 % n_categories != item2 % n_categories) and trials < bias:
-            # ...we give one more chance...
-            item2 = get_item_from_int[random.randint(0, i_count-1)]
-            trials += 1
-            
-        # Do users 1 & 2 have something in common?
-        users_sim = False
+    
+    # Once a user reads from a certain categories, we
+    # want them to favour this category of the others
+    def increase_similar_items_p(user_id, item_id):
+        for i in range(n_items):
+            if i % n_categories == item_id % n_categories:
+                item_probability_weights[user_id][i] += bias
+
+        
+    def users_similarity(user1, user2) -> int:
+        # Do users 1 & 2 have some feature in common?
+        users_sim = 0
         for i in range(len(user_features)):
             if (users[user1][i] == users[user2][i]):
-                users_sim = True
-                break
+                users_sim += 1
+        return users_sim
 
-        # if not, try to get another, more similar, user 2
-        if not users_sim:
-            trials = 0
-            for _ in range(bias):
-                user2 = get_user_from_int[random.randint(0, u_count-1)]
-                for i in range(len(user_features)):
-                    if (users[user1][i] == users[user2][i]):
-                        break
+    # the first item is the most bought etc, the same
+    # for users.
+    item_probability_weights = {}
+    user_probability_weights = {}
+    
+    for u in range(0, n_users):
+        # Only, this will change after a purchase:
+        # the prob for similar items (same cat) will increase
+        item_probability_weights[u] = [n_items/math.sqrt(i+1) for i in range(n_items)]
+        # After u1 has made a purchase, the next user is more
+        # likely to make the same purchase
+        # in case of no previous purchase: 
+        user_probability_weights[None] = [n_users/math.sqrt(u+1) for u in range(n_users)]
+        for u2 in range(0, n_users):
+            user_probability_weights[u] = [n_users/math.sqrt(u+1) for u in range(n_users)]
+            user_probability_weights[u][u2] += users_similarity(u, u2)*bias
             
-        observations.append((user1, item1, 3*o))
-        observations.append((user1, item2, 3*o+1))
-        observations.append((user2, item1, 3*o+2))
+    obs_done = 0
+    over_buyers = set()  # buyers who bought all items
+    while(obs_done <= n_observations and len(over_buyers) < n_users):
+        if obs_done % int(n_observations/10)==0 and obs_done != 0:
+            pc = obs_done // int(n_observations/10)
+            print("%s0 percent of the observations produced (%s)" % (pc, obs_done))
+            
+        if len(over_buyers) > 0:
+            print("Warning: some users have bought all items")
+        elif len(over_buyers) == int(n_users*0.5):
+            print("Warning: 50% of users have bought all items")
+        elif len(over_buyers) == int(n_users*0.9):
+            print("Warning: 90% of users have bought all items")
 
-    still = n_observations - len(observations)
-    for _ in range(still):
-        user = get_user_from_int[random.randint(0, u_count-1)]
-        item = get_item_from_int[random.randint(0, i_count-1)]
-        observations.append((user, item2, n_observations))
+        user_id1 = random_user()
+        user_id2 = random_user(user_id1)
+        item_id1 = sell(user_id1)
+        if item_id1 == -1:  # buyer bought all items
+            over_buyers.add(user_id1)
+            continue
+        observations.setdefault(user_id1, []).append((item_id1, obs_done))
+        increase_similar_items_p(user_id1, item_id1)        
+        obs_done += 1        
+                     
+        # Let's get item2 now...
+        item_id2 = sell(user_id1)
+        if item_id2 == -1:  # buyer bought all items
+            over_buyers.add(user_id1)
+            continue            
+        observations.setdefault(user_id1, []).append((item_id2, obs_done))
+        increase_similar_items_p(user_id1, item_id2)
+        obs_done += 1
+
+        # If user2 hasn't bought item1 yet, they'll do it now
+        if item_id1 not in [i_t[0] for i_t in observations.get(user_id2, [(None, None)])]:
+            observations.setdefault(user_id2, []).append((item_id1, obs_done))
+            obs_done += 1
+        increase_similar_items_p(user_id2, item_id1)
+
+    if  len(over_buyers) == n_users:
+        print("All buyers have bought all items...")
 
     return observations, users
 

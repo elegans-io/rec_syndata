@@ -10,15 +10,16 @@ def write_dataset(users: List, n_items: int, n_categories, observations: List[Tu
     o.csv:  user_id  | item_id  | timestamp
     """
     with open(ucsv, 'w') as f:
-            for ui, u in enumerate(users):
-                    f.write(str(ui) + "\t" + separator.join([str(f) for f in u]) + "\n")
+        for ui, u in enumerate(users):
+            f.write(str(ui) + separator + separator.join([str(f) for f in u]) + "\n")
 
     with open(icsv, 'w') as f:
-            for i in range(0, n_items):
-                    f.write(str(i) + separator + str(i % n_categories) + "\n")
+        for i in range(0, n_items):
+            f.write(str(i) + separator + str(i % n_categories) + "\n")
 
     with open(ocsv, 'w') as f:
-            for o in observations:
-                    f.write(str(o[0]) + "\t" + str(o[1]) + "\t" + str(o[2]) + "\n")                                
+        for u in observations.keys():
+            for o in observations[u]:
+                f.write(str(u) + separator + str(o[0]) + separator + str(o[1]) + "\n")                                
 
     
