@@ -13,15 +13,17 @@ Both users and items follow a simple power-law distribution:
 `bias` tells how similar users and items are.
 
 RSD extract randomly `item1, item2, user1` and `user2`. It tries to
-have `Item2` similar to `item1` and `user2` to `user1`.
+have `user2` similar to `user1`.
+
+Once a user buys an item, its "personal" probabilities of buying
+certain items change: now they'll have higher probability for items in
+the same category.
 
 It associates them in three observations: `(user1, item1), (user1, item2), (user2, item1)`.
 
 #### Items
 
-Items are in the same category if their ID mod(n_categories) is the same. 
-
-If item1 and item2 are not similar, it attempts `bias` times to extract a different item2 hoping to get a similar one. Given an item1, users have higher probability to buy item1+n_categories. If this does not happen, they have a higher probability of buying an item in the same category.
+Items are in the same category (therefore similar) if their ID mod(n_categories) is the same. 
 
 #### Users
 
