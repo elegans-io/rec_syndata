@@ -1,4 +1,26 @@
-# Recommender Synthetic Datasets
+# Monte Carlo for Recommender Test
+
+## Shortly
+
+In brief, this is what the MC does:
+
+* makes a list of users and items, each with a set of features, each feature with a certain number of possible values
+* similarity between all users and all items is computed (cosine distance in the features)
+* at start, users and items probabilities of being chosen follows a powerlaw
+* after a user buys an item:
+- another user is chosen, with probability being `powerlaw*(similarity with previous user)*bias`
+- the powerlaw which choses next item is reset so that the most probable item would be next one, and on top of this powerlaw we apply the same factor as for users, ie `(similarity with previous user)*bias`
+
+## What are the results?
+
+The resulting buyings are quite realistic, in the sense that if a user buys an item, and after few observations (where possibly other users buy different items) buys another item, the two items are going to be similar.
+
+This happens because items are chosen independently of users, and the "free mean path" of the item is still short.
+
+On the contrary, two buyings from the same users made after many observations have a random similarity.
+
+This reflect well the nature of real-life data, where the influence of interactions user-item back in the long past have little influence with today's interactions. On the contrary, what similar people buy today has much influence (if everyone buys Harry Potter, more people will buy it).
+
 
 Simple Python3 functions to produce datasets to be tested with recommenders.
 
