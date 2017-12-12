@@ -10,18 +10,23 @@ from operator import mul
 class Simulator:
 
     def __init__(self, n_users: int, user_features: List[int],
-                    n_items: int, item_features: List[int],
+                    n_items: int, item_features: int,
                     bias: int,
                     cross_influence: bool=True,
                     timestamp: bool=True) -> (List[Tuple], List[Tuple]):
 
         '''Produce a list of observations --users who "buy" items.
+        e.g.
+
+```
+s = Simulator(n_users=1000, user_features=[3, 15, 100], n_items=100000, item_features=[50, 10000, 10], bias=10)  # takes long time
+s.run()
 
         :param int n_users: Number of users
         :param List[int] user_features: [feature1_n_values, feature2... ]
         :param int n_items: Number of items
         :param List[int] item_features: as for users
-        :param int bias: how similar and dissimilar the items are
+        :param int bias: how similarity influences. If 0, at all. If 1, p(item after an item sim=-1)=0
         :param bool cross_influence: after a purchase, a similar user is extracted and given the same item
         :param int timestamp: unix-like timestamp (in seconds)
         :return List[Tuple3]: list of observations (user_id, item_id, timestamp)
@@ -33,10 +38,14 @@ class Simulator:
         self.__item_features = item_features
         self.n_users = n_users
         self.n_items = n_items
-        self.bias = bias
-        print("INFO: creating populations")
-        self.users = self.make_population(n_users, user_features)
-        self.items = self.make_population(n_items, item_features)
+        if self.bias >= 0.0 and self.bias <= 1.0:
+            self.bias = np.float16(bias)
+        else:
+            raise ValueError("Bias must be in [0.0, 1.0]")
+        print("INFO: creating users")
+        self.users = self.make_population(n_users, user_features, msg="user")
+        print("INFO: creating items")
+        self.items = self.make_population(n_items, item_features, msg="item")
 
         print("INFO: creating user probability weights")
         self._user_probability_weights = self.__make_probability_weights(self.users)
@@ -64,7 +73,7 @@ class Simulator:
         '''
         n = len(population)
         probability_weights = {}
-        probability_weights[None] = [n/(i+1) for i in range(n)]  # first one is n, second n/2 etc
+        probability_weights[None] = np.array([n/(i+1) for i in range(n)]).astype(np.float16)  # first one is n, second n/2 etc
         for p in range(0, len(population)):
             # ETA...
             if len(population) > 100:
@@ -73,55 +82,65 @@ class Simulator:
                     pc = p // steps 
                     print("INFO: %s0 percent of the probability weights produced (%s)" % (pc, p))
 
-            probability_weights[p] = list(probability_weights[None])
+            probability_weights[p] = probability_weights[None]
             # P(p_i | p_j) depends on the distance between p_i and p_j:
             for p2 in range(n):
-                probability_weights[p][p2] += population[p]["similarities"][p2]*self.bias  # up if similar (>1), down if dissimilar (<1), nothing if 0
+                try:
+                    sim = population[p]["similarities"][p2]
+                except KeyError:
+                    sim = np.float16(Simulator.get_similarity(population[p]["features"], population[p2]["features"]))
+                    population[p]["similarities"][p2] = sim
+                    population[p2]["similarities"][p] = sim
+                probability_weights[p][p2] += probability_weights[p][p2]*sim*self.bias  # up if similar (>1), down if dissimilar (<1), nothing if 0
         return probability_weights
 
 
     def update_item_weights(self, item_id):
-        '''When an item is bought, its probability (given any other item in the previous observation,
-        hence the factor "similarity*bias") increases.
+        '''When an item is bought, its probability increases.
+        Because we use a zipf distribution which starts with n, n/2, n/3 .... 1,
+        we increase by 1 the bin of the correspondent item
+        
         '''
         for i in range(len(self.items)):
-            self._item_probability_weights[i][item_id] += self.items[i]["similarities"][item_id]*self.bias
+            self._item_probability_weights[i][item_id] += 1
             
 
     
     @staticmethod
-    def get_similarity(f1: List, f2: List) -> np.float64:
+    def get_similarity(f1: List, f2: List, fast=True) -> np.float64:
         # Do 1 & 2 have some feature in common?
-        norm1 = np.linalg.norm(f1)
-        norm2 = np.linalg.norm(f2)
-        if norm1 == 0.0 or norm2 == 0.0:
-            return 0.0
+        if not fast:
+            norm1 = np.float16(np.linalg.norm(f1))
+            norm2 = np.float16(np.linalg.norm(f2))
+            if norm1 == 0.0 or norm2 == 0.0:
+                return np.float16(0.0)
+            else:
+                return np.float16(np.dot(f1, f2) / (norm1*norm2))
         else:
-            return np.dot(f1, f2) / (norm1*norm2)
-
+            return np.float16(np.dot(f1, f2))
 
     def _random_user(self, u=None):
         '''Get next user.
         :par int u: user who was in the previous observation
         :return Tuple(user_id, p): new user_id and the probability we had to get it
         '''
-        weights=self._user_probability_weights[u]
+        weights = self._user_probability_weights[u]
         user = random.choices(range(self.n_users), weights=weights)[0]
-        p = weights[user] / np.linalg.norm(weights)
+        p = np.float16(weights[user] / np.linalg.norm(weights))
         return (user, p)
 
 
     # Get a sold item, but not if already sold that user
-    def _sell(self, user_id, item_id=None):
-        '''
+    def _sell_and_tout(self, user_id, item_id=None, tout=True):
+        '''Sell an item and, if successful, increase the item probability of being sold
         :param int user_id: user who is buying (needed for no-reselling)
-        :param int item_id: item in the previous observation (if any)
+        :param int item_id: item in the previous observation (if not item_id=None)
         :return Tuple(item_id, p):  item chosen and the probability we had to get this item
                                     (-1, 1) if the user has already bought all items...
         '''        
         weights = self._item_probability_weights[item_id]
         if item_id is not None:
-            sold = set([i_t[0] for i_t in self.observations.get(user_id, [(None, None)])])
+            sold = ([i_t[0] for i_t in self.observations.get(user_id, [(None, None)])])
             weights = np.roll(weights, -item_id)  # if it's a new user, who hasn't bought item, item is going to be the most probable one...
             # item_probability_weights[item_id] gives the prob given the past item
             # after having put to 0 all sold items, shift so that the most probable is the next one....
@@ -132,8 +151,9 @@ class Simulator:
         else:
             try:
                 item = random.choices(population=range(self.n_items), weights=weights)[0]
-                self.update_item_weights(item)
-                p = weights[item] / np.linalg.norm(weights)
+                if tout:
+                    self.update_item_weights(item)
+                p = np.float16(weights[item] / np.linalg.norm(weights))
                 return (item, p)
             except:
                 print("ERROR: Weights not valid for random.choices: ", weights)
@@ -148,11 +168,10 @@ class Simulator:
         # go till all users have bought all items or n_obs
         while(obs_done <= n_observations and len(over_buyers) < self.n_users):
             # ETA...
-            if n_observations > 1000:
-                steps = int(n_observations/10)
-                if obs_done % steps==0 and obs_done != 0:
-                    pc = obs_done // steps
-                    print("%s0 percent of the observations produced (%s)" % (pc, obs_done))
+            steps = int(n_observations/10)
+            if obs_done % steps==0 and obs_done != 0:
+                pc = obs_done // steps
+                print("%s0 percent of the observations produced (%s)" % (pc, obs_done))
 
             # some warning if there are overbuyers...
             if len(over_buyers) == 1 and n_warning == 0:
@@ -163,18 +182,17 @@ class Simulator:
                 n_warning = 2
             
             (user, p_u) = self._random_user(user)  # new user given the previous user
-            (new_item, p_i)  = self._sell(user, item)  # given the item bought in the last iteration... (even if not by the same user)            
+            (new_item, p_i)  = self._sell_and_tout(user, item, tout=True)  # given the item bought in the last iteration... (even if not by the same user)            
             if new_item == -1:  # buyer bought all items
                 over_buyers.add(user)
                 continue
             item = new_item
-            # update items' probability: more frequent an item, more probably will be bought!
-            
             self.observations.setdefault(user, []).append((item, obs_done*self._time_unites))
             self.observations_list.append(((user, p_u), (item, p_i), obs_done*self._time_unites))
-            self.__hash = tuple(self.observations_list).__hash__()  # new observations!
+            
             obs_done += 1        
 
+        self.__hash = tuple(self.observations_list).__hash__()  # new observations!            
         if  len(over_buyers) == self.n_users:
             print("All buyers have bought all items...")
 
@@ -213,8 +231,7 @@ class Simulator:
 
     def recommender_information(self):
         '''
-        How much can we lower our uncertainty when knowing how the
-        dataset was built?
+        How much can we lower our uncertainty when knowing how the dataset was built?
 
         For each set of observation, the uncertainty (average surprise, which
         is constant because we expect all books to have the same probability 1/N)
@@ -224,82 +241,89 @@ class Simulator:
 
         But in reality, once a user buys an item, the probability that the same user
         will buy a certain items is now bigger than 1/N, and smaller for others –not
-        because we know that books' probability follows a power-law, but also because
+        just because we know that books' probability follows a power-law, but also because
         each user buys an item similar to the one bought one step earlier by a similar
         user, which did the same till the user in the previous step was the original
         user themselves.
 
         So, the probability of user u_i buying item b_k given their previous buying:
         
-        P(observation=n, user=u_i, item=b_k | observation=n-j, user=u_i, item=b_l)
+        P(observation=n, user=u_i, item=b_k) = f(observation=n-j, user=u_i, item=b_l)
 
-        where observation n-j is the last buying by user u_i. Of course, following the
-        pattern P(n | n-1, n-2, ... , n-j) is possible in theory, but not at all straightforward
-        (at least for Mario).
+        --where observation n-j is the last buying by user u_i-- is hard to compute
+        (NB there is "j" because u_i bought j-time ago, with many other transactions by other users
+        in-between).
+        One could follow the probability of each step in the pattern P(n | n-1, n-2, ... , n-j),
+        but that's not at all straightforward (at least for Mario).
 
         We therefore model P(n | n-j) with something like:
 
-        $$ P(n | powerlaw(b_l) * ( (distance(n_k, b_l)*bias)-1)*exp(-par*(j-1)) + 1.0) $$
+        $$ f(powerlaw(b_l)(1 + distance(b_k, b_l)*bias)*1/sqrt(j) ) $$
 
-        with the idea that there is a random walk from one user to the other
-        (free meanpath is sqrt(j) independently on dimeensions --see freemeanpath.py--
-        without considering the different P(user)).
+        The factor 1/j comes from two considerations:
 
-        In case it's the first buying we'll have P(powerlaw(b_l)), like saying j -> inf.
+        1. Euristic, books bought long time ago are still influencial to what we read today.
+        2. The average meanpath goes with sqrt(j). That means that (assuming that distance
+        among the items is uniformly distributed in bins of width d_m=max_distance/n) the number of
+        possible items which originated the one we saw is the ones with distance [0, d_m],
+        then [d_m, d_m*sqrt(2)], [d_m*s(2), d_m*s(3)], ... which goes of course down like 1/sqrt(i)
 
         That's the best a recommender should be able to get (as it will get as input the previous
         buyings of the user and not from the previous step).
 
-        NOTE:
-
-        1. par deve essere ottimizzato anche nella NN! per ora lo mettiamo fisso...
-        2. ha senso avere una fz simile nella NN? con powerlaw e bias?
+        ==> ha senso avere una fz simile nella NN? con powerlaw e bias?
         
         '''
         pass
 
 
-    def print_observations(self, filename, separator="\t"):
-        with open(filename, 'w') as f:
+    def export(self, filenames=["is.csv", "us.csv", "os.csv"], separator="\t"):
+        
+        with open(filenames[2], 'w') as f:
             f.write('user' + separator + str('item') + separator + 'timestamp' + "\n")
             for o in self.observations_list:
                 f.write(str(o[0][0]) + separator + str(o[1][0]) + separator + str(o[2]) + "\n")
 
-
-    def print_users(self, filename, separator="\t"):
-        with open(filename, 'w') as f:
+        with open(filenames[1], 'w') as f:
             n_features = len(self.__user_features)
             f.write('user' + separator + separator.join(['feature_'+str(i) for i in range(n_features)]) + "\n")
             for ui, u in enumerate(self.users):
                 f.write(str(ui) + separator + separator.join([str(f) for f in u]) + "\n")
         
+        with open(filenames[0], 'w') as f:
+            n_features = self.__item_features
+            f.write('item' + separator + separator.join(['feature_'+str(i) for i in range(n_features)]) + "\n")
+            for ui, u in enumerate(self.items):
+                f.write(str(ui) + separator + separator.join([str(f) for f in u]) + "\n")
+        
         
     @staticmethod            
-    def make_population(n: int, features: List[int]) -> List[Tuple]:
+    def make_population(n: int, features, msg="generic") -> List[Tuple]:
         '''
         Values of features are uniformly distributed between -1 and 1.
 
-        NO TWO INDIVIDUALS WILL HAVE THE SAME SET OF FEATURES! The idea
-        is that features are, hiddenly, the minimum set of dimension I can use
-        to describe individuals, therefore each individual is unique.
+        The idea is that features are, hiddenly, the minimum set of dimension I can use
+        to describe individuals.
 
-        The idea is that users with some of the features having the same value
+        Users with some of the features having the same value
         have similar taste and similar items should be bought after a buying.
 
         :param int n: Number of individuals (items/users)
-        :param List[int] features: [feature1_n_values, feature2... ]
+        :param (List[int] OR int) features: [feature1_n_values, feature2... ] or Number of features. If list: only feature*_n_values [-1, 1] are generated for each feature (users!). In the second case (items!) a uniform float [-1, 1] for each features will be generated.
         :return Dict: {"feature": Tuple, "similarity": List(similarity with other individual)}
         '''
         population = []
-        if reduce(mul, features, 1) < n:
-            raise ValueError("Not enought features to make different individuals")
         while len(population) < n:
+            if n > 1000:
+                steps = int(n/10)
+                if len(population) % steps==0 and len(population) != 0:
+                    pc = len(population) // steps 
+                    print("INFO: %s0 percent of the %s population produced (%s)" % (pc, msg, len(population)))
+
             # values uniformly distributed in [-1, +1] for each feature
-            f = [2.0*random.randint(0, f-1)/(f-1)-1 for f in features]
-            population.append({"features": tuple(f), "similarities": dict([(i, None) for i in range(n)])})
-            present_i = len(population) - 1
-            for i in range(present_i+1):
-                sim = Simulator.get_similarity(population[i]["features"], population[present_i]["features"])
-                population[i]["similarities"][present_i] = sim
-                population[present_i]["similarities"][i] = sim
+            try:
+                f = np.array([2.0*random.randint(0, f-1)/(f-1)-1 for f in features]).astype(np.float16)
+            except TypeError:  # it's int...
+                f = np.random.uniform(-1, 1, features).astype(np.float16)
+            population.append({"features": f, "similarities": {}})
         return population
