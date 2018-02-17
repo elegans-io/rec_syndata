@@ -3,6 +3,7 @@ from typing import List, Tuple, Dict
 import math
 import numpy as np
 from synthetic_data.observation import Observation
+import os, pickle
 
 # Created by Mario Alemi 29 November 2017
 
@@ -12,6 +13,7 @@ class Simulator:
     def __init__(self, n_users: int, user_features: List[int],
                     n_items: int, item_features: int,
                     bias: int,
+                    cache: bool = False,
                     timestamp: bool=True) -> (List[Tuple], List[Tuple]):
 
         """Produce a list of observations --users who "buy" items.
@@ -37,6 +39,7 @@ s.run()
         self.__item_features = item_features
         self.n_users = n_users
         self.n_items = n_items
+        self.cache = cache
         if 0.0 <= bias <= 1.0:
             self.bias = np.float32(bias)
         else:
@@ -47,9 +50,11 @@ s.run()
         self.items = self.make_population(n_items, item_features, msg="item")
 
         print("INFO: creating user probability weights")
-        self._user_probability_weights = self.__make_probability_weights(self.users)
+        self._user_probability_weights = {}
+        self.__make_probability_weights(self.users, "user")
         print("INFO: creating item probability weights")
-        self._item_probability_weights = self.__make_probability_weights(self.items)
+        self._item_probability_weights = {}
+        self.__make_probability_weights(self.items, "item")
 
         self.__hash = tuple(self.observations_list).__hash__()  # to be updated each time we change observations
         self.__max_information = None
@@ -63,8 +68,21 @@ s.run()
         else:
             self._time_unites = 1
 
+    def get_user_probability_weights(self, user_id):
+        if self.cache:
+            return pickle.load("cache/"+str(user_id)+"/probability_weight.pickle")
+        else:
+            return self._user_probability_weights[user_id]
 
-    def __make_probability_weights(self, population):
+
+    def get_item_probability_weights(self, user_id):
+        if self.cache:
+            pickle.load("cache/"+str(user_id)+"/probability_weight.pickle")
+        else:
+            return self._item_probability_weights[user_id]
+
+
+    def __make_probability_weights(self, population, name=None):
         """Given an individual, get the probability of getting any other one according to
         a powerlaw distribution.
 
@@ -73,6 +91,14 @@ s.run()
         n = len(population)
         probability_weights = {}
         probability_weights[None] = np.array([n/(i+1) for i in range(n)]).astype(np.float32)  # first one is n, second n/2 etc
+
+        if self.cache:
+            if name is None:
+                raise Exception("ERROR: Cache without name")
+            os.mkdir("cache")
+            pickle.dump(probability_weights[None], open('_item_probability_weights', 'wb'))
+        else:
+
 
         for p in range(0, n):
             # ETA...
