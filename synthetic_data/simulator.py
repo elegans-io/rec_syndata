@@ -1,5 +1,5 @@
 import random
-from typing import List, Tuple, Dict
+from typing import List, Dict, Tuple
 import math
 import numpy as np
 from synthetic_data.observation import Observation
@@ -11,24 +11,25 @@ import os, pickle
 class Simulator:
 
     def __init__(self, n_users: int, user_features: List[int],
-                    n_items: int, item_features: int,
-                    bias: int,
-                    cache: bool = False,
-                    timestamp: bool=True) -> (List[Tuple], List[Tuple]):
+                 n_items: int, item_features: int,
+                 bias: int,
+                 read_cache_dir: str = None,
+                 save_cache_dir: str = None,
+                 timestamp: bool=True) -> None:
 
         """Produce a list of observations --users who "buy" items.
         e.g.
 
 ```
-s = Simulator(n_users=1000, user_features=[3, 15, 100], n_items=100000, item_features=[50, 10000, 10], bias=10)  # takes long time
+s = Simulator(n_users=1000, user_features=[3, 15, 100], n_items=100000, item_features=100, bias=0.9)  # it takes long time
 s.run()
+```
 
         :param int n_users: Number of users
         :param List[int] user_features: [feature1_n_values, feature2... ]
         :param int n_items: Number of items
         :param List[int] item_features: as for users
         :param int bias: how similarity influences. If 0, at all. If 1, p(item after an item sim=-1)=0
-        :param bool cross_influence: after a purchase, a similar user is extracted and given the same item
         :param int timestamp: unix-like timestamp (in seconds)
         :return List[Tuple3]: list of observations (user_id, item_id, timestamp)
 
@@ -39,76 +40,74 @@ s.run()
         self.__item_features = item_features
         self.n_users = n_users
         self.n_items = n_items
-        self.cache = cache
+        assert read_cache_dir is None or save_cache_dir is None, \
+            "saving and reading the cache at the same time does not make sense"
+        self.read_cache_dir = read_cache_dir
+        self.save_cache_dir = save_cache_dir
         if 0.0 <= bias <= 1.0:
             self.bias = np.float32(bias)
         else:
             raise ValueError("Bias must be in [0.0, 1.0]")
-        print("INFO: creating users")
-        self.users = self.make_population(n_users, user_features, msg="user")
-        print("INFO: creating items")
-        self.items = self.make_population(n_items, item_features, msg="item")
+
+        # creating users
+        self.users = self.make_population(n=n_users, features=user_features, population_name="user")
+        # creating items
+        self.items = self.make_population(n=n_items, features=item_features, population_name="item")
 
         print("INFO: creating user probability weights")
-        self._user_probability_weights = {}
-        self.__make_probability_weights(self.users, "user")
-        print("INFO: creating item probability weights")
-        self._item_probability_weights = {}
-        self.__make_probability_weights(self.items, "item")
+        self._user_probability_weights = self.get_probability_weights(population=self.items,
+                                                                      population_name="item")
 
-        self.__hash = tuple(self.observations_list).__hash__()  # to be updated each time we change observations
+        print("INFO: creating item probability weights")
+        self._item_probability_weights = self.get_probability_weights(population=self.items,
+                                                                      population_name="item")
+
+        # to be updated each time we change observations
+        self.__hash = tuple(self.observations_list).__hash__()
         self.__max_information = None
         self.__recommender_information = None
 
-        self.__last_max_information = self.__hash  # avoid computing twice the info for the same observations
+        # avoid computing twice the info for the same observations
+        self.__last_max_information = self.__hash
         self.__last_recommender_information = self.__hash
                 
         if timestamp:
-            self._time_unites = 86400
+            self._time_unites = 86400  # one day
         else:
             self._time_unites = 1
 
-    def get_user_probability_weights(self, user_id):
-        if self.cache:
-            return pickle.load("cache/"+str(user_id)+"/probability_weight.pickle")
+    def get_probability_weights(self, population, population_name):
+        if self.read_cache_dir is not None:
+            probability_weights = pickle.load(open(str(self.read_cache_dir) + "/" + str(population_name) +
+                                              "/probability_weights.pickle", 'rb'))
+            assert len(probability_weights) == len(population)
+            return probability_weights
         else:
-            return self._user_probability_weights[user_id]
+            return self._make_probability_weights(population, population_name)
 
-
-    def get_item_probability_weights(self, user_id):
-        if self.cache:
-            pickle.load("cache/"+str(user_id)+"/probability_weight.pickle")
-        else:
-            return self._item_probability_weights[user_id]
-
-
-    def __make_probability_weights(self, population, name=None):
-        """Given an individual, get the probability of getting any other one according to
-        a powerlaw distribution.
+    def _make_probability_weights(self, population, population_name):
+        """Given an individual (eg users or items), get the probability of getting any
+        other one according to a powerlaw distribution.
 
         :return List(List): [i][j] probability of j given i
         """
+
         n = len(population)
-        probability_weights = {}
-        probability_weights[None] = np.array([n/(i+1) for i in range(n)]).astype(np.float32)  # first one is n, second n/2 etc
 
-        if self.cache:
-            if name is None:
-                raise Exception("ERROR: Cache without name")
-            os.mkdir("cache")
-            pickle.dump(probability_weights[None], open('_item_probability_weights', 'wb'))
-        else:
+        # fill the blueprint for probability weights according to a powerlaw n->1/n (not normalized)
+        probability_weights = {
+            None: np.array([n/(i+1) for i in range(n)]).astype(np.float32)
+        }
 
-
-        for p in range(0, n):
+        for p in range(n):
             # ETA...
             if n > 100:
                 steps = int(len(population)/10)
-                if p % steps==0 and p != 0:
+                if p % steps == 0 and p != 0:
                     pc = p // steps 
                     print("INFO: %s0 percent of the probability weights produced (%s)" % (pc, p))
 
-            probability_weights[p] = probability_weights[None]
+            probability_weights[p] = probability_weights[None].copy()
             # P(p_i | p_j) depends on the distance between p_i and p_j:
             for p2 in range(n):
                 try:
@@ -117,20 +116,30 @@ s.run()
                     sim = np.float32(Simulator.get_similarity(population[p]["features"], population[p2]["features"]))
                     population[p]["similarities"][p2] = sim
                     population[p2]["similarities"][p] = sim
-                probability_weights[p][p2] += probability_weights[p][p2]*sim*self.bias  # up if similar (>1), down if dissimilar (<1), nothing if 0
-                assert(probability_weights[p][p2] < 0, "ERROR: weights cannot be < 0")
+                # weights go to 0 for max dissimilar items (sim=-1) with bias=1
+                probability_weights[p][p2] += probability_weights[p][p2]*sim*self.bias
+                # should never happen...
+                assert probability_weights[p][p2] >= 0, "ERROR: weights cannot be < 0"
+
+        if self.save_cache_dir is not None:
+            try:
+                os.mkdir(self.save_cache_dir)
+            except FileExistsError:
+                raise FileExistsError("A cache directory with this name already exists, pls delete it")
+            cache_file = str(self.save_cache_dir) + "/" + str(population_name) + "/" + "probability_weights.pickle"
+            pickle.dump(probability_weights, open(cache_file, 'wb'))
+
         return probability_weights
 
     def update_item_weights(self, item_id):
         """When an item is bought, its probability increases.
-        Because we use a zipf distribution which starts with n, n/2, n/3 .... 1,
+        Because we use a Zipf distribution which starts with n, n/2, n/3 .... 1,
         we increase by 1 the bin of the correspondent item
         
         """
         for i in range(len(self.items)):
             self._item_probability_weights[i][item_id] += 1
         self._item_probability_weights[None][item_id] += 1
-
     
     @staticmethod
     def get_similarity(f1: List, f2: List) -> np.float64:
@@ -142,18 +151,18 @@ s.run()
         else:
             return np.float32(np.dot(f1, f2) / (norm1*norm2))
 
-    def _random_user(self, u=None):
-        """Get next user.
-        :par int u: user who was in the previous observation
+    def _random_user(self, u=None) -> Tuple:
+        """Get a random user who will buy something, considering that this
+        user might be influenced by the user who previously bought something...
+
+        :par int u: user who was in the previous observation (None if none)
         :return Tuple(user_id, p): new user_id and the probability we had to get it
         """
         weights = self._user_probability_weights[u]
         user = random.choices(range(self.n_users), weights=weights)[0]
         p = np.float32(weights[user] / np.linalg.norm(weights))
-        return (user, p)
+        return user, p
 
-
-    # Get a sold item, but not if already sold that user
     def _sell_and_tout(self, user_id, item_id=None, tout=True):
         """Sell an item and, if successful, increase the item probability of being sold
         :param int user_id: user who is buying (needed for no-reselling)
@@ -172,7 +181,8 @@ s.run()
             return -1, 1
         else:
             try:
-                new_item = random.choices(population=range(self.n_items), weights=weights)[0]
+                new_item = random.choices(population=range(self.n_items),
+                                          weights=weights)[0]
                 if tout:
                     # makes new item more probable increasing sales for any item previously bought
                     self.update_item_weights(new_item)
@@ -182,7 +192,12 @@ s.run()
                 print("ERROR: Weights not valid for random.choices:\n", weights)
                 raise BaseException
 
-    def run(self, n_observations):
+    def run(self, n_observations: int) -> None:
+        """Create observations.
+
+        :param n_observations:
+        :return: List[Dict]
+        """
         # reset dict and list, otherwise we'll have inconsistent timestamps...
         # (but leave the probabilities)
         self.user_buying_dict = {}
@@ -193,20 +208,24 @@ s.run()
         user = None
         item = None
         # go till all users have bought all items or n_obs
-        while(obs_done <= n_observations and len(over_buyers) < self.n_users):
+        while obs_done <= n_observations and len(over_buyers) < self.n_users:
             # ETA...
-            steps = int(n_observations/10)
-            if obs_done % steps==0 and obs_done != 0:
-                pc = obs_done // steps
-                print("%s0 percent of the observations produced (%s)" % (pc, obs_done))
+            if n_observations > 100:
+                steps = int(n_observations/10)
+                if obs_done % steps == 0 and obs_done != 0:
+                    pc = obs_done // steps
+                    print("%s0 percent of the observations produced (%s)" % (pc, obs_done))
 
-            # some warning if there are overbuyers...
+            # some warning if there are buyers who bought all items...
             if len(over_buyers) == 1 and n_warning == 0:
                 print("Warning: user %s has bought all items" % list(over_buyers)[0])
                 n_warning = 1
             elif len(over_buyers) == int(self.n_users*0.5) and n_warning == 1:
                 print("Warning: 50% of users have bought all items")
                 n_warning = 2
+            elif len(over_buyers) == self.n_users:
+                print("All users have bought all items. Stopping here.")
+                break
 
             # new user given the previous user:
             (user, p_u) = self._random_user(user)
@@ -226,8 +245,6 @@ s.run()
             obs_done += 1        
 
         self.__hash = tuple(self.observations_list).__hash__()  # new observations!            
-        if len(over_buyers) == self.n_users:
-            print("All buyers have bought all items...")
 
     def best_kl(self):
         """The best possible KL divergence a recommender can get. This means a predictor
@@ -238,8 +255,7 @@ s.run()
         pass
 
     def max_information(self):
-        """
-        The actual information considering what we really know --that each observation depends only
+        """The actual information considering what we really know --that each observation depends only
         on the previous observation.
 
         Information is: uncertainty(no model) - uncertainty(knowing the model)
@@ -303,7 +319,7 @@ s.run()
 
         The factor 1/sqrt(j) comes from two considerations:
 
-        1. Euristic, books bought long time ago are still influencial to what we read today.
+        1. Heuristic, books bought long time ago are still influential to what we read today.
         2. The average mean-path goes with sqrt(j). That means that (assuming that distance
         among the items is uniformly distributed in bins of width d_m=max_distance/n) the number of
         possible items which originated the one we saw is the ones with distance [0, d_m],
@@ -325,10 +341,10 @@ s.run()
                     item = i_t[0]
                     p = weights[item] / np.linalg.norm(weights)
                     if user_surprise.get(user) is None:
-                        assert(i == 0, "Check this, it should be the first buy...")
+                        assert i == 0, "Check this, it should be the first buy..."
                         user_surprise[user] = -math.log(p)
                     else:
-                        assert(i > 0, "Check this, it should not be the first buy...")
+                        assert i > 0, "Check this, it should not be the first buy..."
                         # p = f(powerlaw(b_l)(1 + distance(b_k, b_l)*bias)*1/sqrt(j) )
                         # print("P BEFORE ", p, Simulator.get_similarity(self.items[item_times[i-1][0]]["features"],
                         #                                                self.items[i_t[0]]["features"]),
@@ -365,21 +381,26 @@ s.run()
             for ui, u in enumerate(self.items):
                 f.write(str(ui) + separator + separator.join([str(f) for f in u]) + "\n")
         
-        
-    @staticmethod            
-    def make_population(n: int, features, msg="generic") -> List[Dict]:
+    @staticmethod
+    def make_population(n: int, features, population_name) -> List[Dict]:
         """
         Values of features are uniformly distributed between -1 and 1.
 
-        The idea is that features are, hiddenly, the minimum set of dimension I can use
-        to describe individuals.
+        The idea is that features are the minimum set of dimension I can use
+        to describe individuals (be items or users).
+
+        Users: only discreet features (eg age, geo, gender etc) => feature=[int, int..]
+        Items: only continuous features => feature=int
 
         Users with some of the features having the same value
         have similar taste and similar items should be bought after a buying.
 
         :param int n: Number of individuals (items/users)
-        :param (List[int] OR int) features: [feature1_n_values, feature2... ] or Number of features. If list: only feature*_n_values [-1, 1] are generated for each feature (users!). In the second case (items!) a uniform float [-1, 1] for each features will be generated.
-        :return List[Dict]: {"feature": Tuple, "similarity": List(similarity with other individual)}
+        :param (List[int] OR int) features:  or Number of features.
+                List: [feature1_n_values, feature2... ]. feature_n_values in [-1, 1] are generated for each feature
+                Int: N. N features uniformly distributed in [-1, 1]
+        :param population_name "user" or "item" just for messaging
+        :return List[Dict]: {"feature": Tuple, "similarity": {}}  # similarity with other individual will be filled later
         """
         population = []
         while len(population) < n:
@@ -387,7 +408,7 @@ s.run()
                 steps = int(n/10)
                 if len(population) % steps==0 and len(population) != 0:
                     pc = len(population) // steps 
-                    print("INFO: %s0 percent of the %s population produced (%s)" % (pc, msg, len(population)))
+                    print("INFO: %s0 percent of the %s population produced (%s)" % (pc, population_name, len(population)))
 
             # values uniformly distributed in [-1, +1] for each feature
             try:
