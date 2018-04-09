@@ -24,9 +24,11 @@ from synthetic_data import Simulator
 # and items with 10 continuous features
 s = Simulator(n_users=101, user_features=0, n_items=1500, item_features=10, bias=1.0)
 # users have two features, the first with 3 possible values, the secondo 10
-s2 = Simulator(n_users=101, user_features=[3, 10], n_items=1500, item_features=10, bias=1.0)
+s = Simulator(n_users=101, user_features=[3, 10], n_items=1500, item_features=10, bias=1.0)
+# do not impose a zipf distribution, but start with a uniform one:
+s = Simulator(n_users=101, user_features=[3, 10], n_items=1500, item_features=10, bias=1.0, users_distribution="uniform", items_distribution="uniform")
 # produces observations
-s.run()
+s.run(1000)
 # export the data
 s.export(separator=',', print_timestamp=False)
 ```
