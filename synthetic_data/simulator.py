@@ -5,32 +5,49 @@ import numpy as np
 from synthetic_data.observation import Observation
 import os
 import pickle
-from collections import OrderedDict
 import time
 
 
 # Created by Mario Alemi 29 November 2017
 
-def xLogX(x):
-    return -x*np.log(x)
+def xlogx(x):
+    return -x * math.log(float(x)) if x > 0 else 0
+
+
+def xlogx_vec(x):
+    xlogx_vectorized = np.vectorize(xlogx)
+    return np.array([xlogx_vectorized(a) for a in x])
 
 
 def entropy2(a, b):
-    return xLogX(a + b) - xLogX(a) - xLogX(b)
+    return -xlogx(a + b) + xlogx(a) + xlogx(b)
 
 
 def entropy4(a, b, c, d):
-    return xLogX(a + b + c + d) - xLogX(a) - xLogX(b) - xLogX(c) - xLogX(d)
+    return -xlogx(a + b + c + d) + xlogx(a) + xlogx(b) + xlogx(c) + xlogx(d)
 
 
 def loglikelihood_ratio(k11, k10, k01, k00):
+    assert (k11 >= 0 and k10 >= 0 and k01 >= 0 and k00 >= 0)
     row_entropy = entropy2(k11 + k10, k01 + k00)
     column_entropy = entropy2(k11 + k01, k10 + k00)
     matrix_entropy = entropy4(k11, k10, k01, k00)
-    # if row_entropy + column_entropy < matrix_entropy:
-    #     # round off error
-    #     return 0.0
+    if row_entropy + column_entropy < matrix_entropy:
+        # round off error
+        return 0.0
     return 2.0 * (row_entropy + column_entropy - matrix_entropy)
+
+
+def root_loglikelihood_ratio(k11, k10, k01, k00):
+    result = k11.copy()
+    result.fill(0.0)
+    for i in range(len(result)-1):
+        for j in range(len(result[i])-1):
+            result[i][j] = np.sqrt(loglikelihood_ratio(k11[i][j], k10[i][j], k01[i][j], k00[i][j]))
+            if (k11[i][j] + k10[i][j]) > 0 and (k01[i][j] + k00[i][j]) > 0:
+                if k11[i][j] / (k11[i][j] + k10[i][j]) < k01[i][j] / (k01[i][j] + k00[i][j]):
+                    result[i][j] = -result[i][j]
+    return result
 
 
 class Simulator:
@@ -68,7 +85,8 @@ s.run()
         self._item_features = item_features
         self.n_users = n_users
         self.n_items = n_items
-        self.reset_matrices()
+        self._reset_cooccurrences_matrices()
+        self._reset_sequentials_matrices()
         self.tout = tout
         assert read_cache_dir is None or save_cache_dir is None, \
             "saving and reading the cache at the same time does not make sense"
@@ -99,7 +117,8 @@ s.run()
                                                                       distribution=items_distribution)
 
         # track times
-        self._cooccurence_time = 0
+        self._cooccurrence_time = 0
+        self._sequential_time = 0
         self._observations_time = 0
 
         # to be updated each time we change observations
@@ -116,18 +135,25 @@ s.run()
         else:
             self._time_unites = 1
 
-    def reset_matrices(self):
+    def _reset_cooccurrences_matrices(self):
         # user has item
         self.user_item_present = np.zeros(self.n_users * self.n_items).reshape((self.n_users, self.n_items))
         # user does not have item
         self.user_item_absent = np.ones(self.n_users * self.n_items).reshape((self.n_users, self.n_items))
-        self.items_cooccurence11 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
-        self.items_cooccurence10 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
-        self.items_cooccurence01 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
-        self.items_cooccurence00 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
+        # co-occurrence matrices
+        self.items_cooccurrence11 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
+        self.items_cooccurrence10 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
+        self.items_cooccurrence01 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
+        self.items_cooccurrence00 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
         self.items_llr = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
-        self.users_cooccurence = np.zeros(self.n_users * self.n_users).reshape((self.n_users, self.n_users))
+        self.users_cooccurrence = np.zeros(self.n_users * self.n_users).reshape((self.n_users, self.n_users))
 
+    def _reset_sequentials_matrices(self):
+        self.items_sequentials11 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
+        self.items_sequentials01 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
+        self.items_sequentials10 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
+        self.items_sequentials00 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
+        self.items_sequential_llr = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
 
     def get_probability_weights(self, population, population_name, distribution):
         """Just a wrapper to _make_probability_weights in case we don't use cache"""
@@ -184,8 +210,10 @@ s.run()
                 if sim <= 0:
                     probability_weights[p][p2] = 0.0
                 else:
-                    probability_weights[p][p2] = sim ** self.bias * len(population) + 1.0
-
+                    # if bias is 0 nothing changes
+                    # if bias is 1 prob goes from 0 (sim=0) to the original one (sim=1)
+                    probability_weights[p][p2] = probability_weights[p][p2] * (1 - self.bias) + \
+                                                 probability_weights[p][p2] * self.bias * sim
                 if probability_weights[p][p2] < 0:
                     probability_weights[p][p2] = 0.0
 
@@ -209,7 +237,10 @@ s.run()
     
     @staticmethod
     def get_similarity(f1: List, f2: List) -> np.float64:
-        """Return cosine similarity"""
+        """Return cosine similarity:
+        1 = very similar
+        0 = not at all (cosine is -1)
+        """
         # Do 1 & 2 have some feature in common?
         norm1 = np.float32(np.linalg.norm(f1))
         norm2 = np.float32(np.linalg.norm(f2))
@@ -218,7 +249,8 @@ s.run()
         else:
             sim = np.float32(np.dot(f1, f2) / (norm1*norm2))
             # floating errors makes abs(similarity) > 1.0
-            return np.sign(sim) * min(abs(sim), 1)
+            sim = np.sign(sim) * min(abs(sim), 1)
+            return (sim + 1.0) / 2.0
 
     def _random_user(self, previous_user=None) -> Tuple:
         """Get a random user who will buy something, considering that this
@@ -326,7 +358,8 @@ s.run()
         pass
 
     def max_information(self):
-        """The actual information considering what we really know --that each observation depends only
+        """TODO
+        The actual information considering what we really know --that each observation depends only
         on the previous observation.
 
         Information is: uncertainty(no model) - uncertainty(knowing the model)
@@ -356,7 +389,7 @@ s.run()
         return self.__max_information
 
     def recommender_information(self):
-        """
+        """TODO
         How much can we lower our uncertainty when knowing how the dataset was built?
 
         This is different from max_information, because in the recommender we only put
@@ -455,7 +488,10 @@ s.run()
                 n_features = self._user_features
             f.write('user' + separator + separator.join(['feature_'+str(i) for i in range(n_features)]) + "\n")
             for ui, u in enumerate(self.users):
-                f.write(str(ui) + separator + separator.join([str(f) for f in u['features']]) + "\n")
+                try:
+                    f.write(str(ui) + separator + separator.join([str(f) for f in u['features']]) + "\n")
+                except TypeError:  # u['feature'] not iterable (0)
+                    f.write(str(ui))
         
         with open(filenames[0], 'w') as f:
             try:
@@ -466,84 +502,115 @@ s.run()
             for ui, u in enumerate(self.items):
                 f.write(str(ui) + separator + separator.join([str(f) for f in u['features']]) + "\n")
 
-    def get_popular_items(self, make_dict=True):
-        if not make_dict:
-            pop = np.zeros(self.n_items)
-            for o in self.observations_list:
-                pop[o["item_id"]] += 1
-            return pop
-        else:
-            pop = dict((i, 0) for i in range(self.n_items))
-            for o in self.observations_list:
-                pop[o["item_id"]] += 1
-            return OrderedDict(sorted(pop.items(), key=lambda t: t[1], reverse=True))
+    def get_popular_items(self, maxi=20):
+        pop = dict((i, 0) for i in range(self.n_items))
+        for o in self.observations_list:
+            pop[o["item_id"]] += 1
+        return sorted(pop.items(), key=lambda t: t[1], reverse=True)[:maxi]
 
-    def get_popular_users(self, make_dict=True):
-        if not make_dict:
-            pop = np.zeros(self.n_users)
-            for o in self.observations_list:
-                pop[o["user_id"]] += 1
-            return pop
-        else:
-            pop = dict((i, 0) for i in range(self.n_users))
-            for o in self.observations_list:
-                pop[o["user_id"]] += 1
-            return OrderedDict(sorted(pop.items(), key=lambda t: t[1], reverse=True))
+    def get_popular_users(self, maxi=20):
+        pop = dict((i, 0) for i in range(self.n_users))
+        for o in self.observations_list:
+            pop[o["user_id"]] += 1
+        return sorted(pop.items(), key=lambda t: t[1], reverse=True)[:maxi]
 
     def get_similar_items(self, item, maxi=20):
-        sims = self.items[item]['similarities']
+        sims = self.items[item]['similarities'].copy()
+        del(sims[item])
         return sorted(sims.items(), key=lambda t: t[1], reverse=True)[:maxi]
 
     def get_similar_users(self, user):
-        sims = self.users[user]['similarities']
+        sims = self.users[user]['similarities'].copy()
+        del(sims[user])
         return sorted(sims.items(), key=lambda t: t[1], reverse=True)
 
-    def compute_cooccurences(self):
-        self.reset_matrices()
+    def compute_cooccurrences(self):
+        self._reset_cooccurrences_matrices()
         for o in self.observations_list:
             self.user_item_present[o['user_id']][o['item_id']] += 1
             self.user_item_absent[o['user_id']][o['item_id']] -= 1
-        self.items_cooccurence11 = np.matmul(self.user_item_present.transpose(), self.user_item_present)
-        self.items_cooccurence10 = np.matmul(self.user_item_present.transpose(), self.user_item_absent)
-        self.items_cooccurence01 = np.matmul(self.user_item_absent.transpose(), self.user_item_present)
-        self.items_cooccurence00 = np.matmul(self.user_item_absent.transpose(), self.user_item_absent)
-        self.items_llr = loglikelihood_ratio(self.items_cooccurence11,
-                                             self.items_cooccurence01,
-                                             self.items_cooccurence10,
-                                             self.items_cooccurence00)
-        self._cooccurence_time = time.time()
+        self.items_cooccurrence11 = np.matmul(self.user_item_present.transpose(), self.user_item_present)
+        self.items_cooccurrence10 = np.matmul(self.user_item_present.transpose(), self.user_item_absent)
+        self.items_cooccurrence01 = np.matmul(self.user_item_absent.transpose(), self.user_item_present)
+        self.items_cooccurrence00 = np.matmul(self.user_item_absent.transpose(), self.user_item_absent)
+        self.items_llr = root_loglikelihood_ratio(self.items_cooccurrence11,
+                                                  self.items_cooccurrence01,
+                                                  self.items_cooccurrence10,
+                                                  self.items_cooccurrence00)
+        self._cooccurrence_time = time.time()
+
+    def compute_sequentials(self):
+        self._reset_sequentials_matrices()
+
+        start_time = time.time()
+        counter = 0
+        loops = len(self.observations_list)*self.n_items**2
+        time_warned = False
+        for u in self.user_buying_dict:
+            if counter > 1000 and not time_warned:
+                exp_time = loops * (time.time() - start_time) / counter
+                print("Expected time in seconds: ", round(exp_time, 0))
+                time_warned = True
+
+            for j, item_time in enumerate(self.user_buying_dict[u]):
+                item = item_time[0]
+                if j > 0:
+                    self.items_sequentials11[self.user_buying_dict[u][j-1][0]][item] += 1
+                    for item2 in range(self.n_items):
+                        if item2 != item:
+                            self.items_sequentials10[self.user_buying_dict[u][j-1][0]][item2] += 1
+                        if item2 != self.user_buying_dict[u][j-1][0]:
+                            self.items_sequentials01[item2][item] += 1
+                        for item3 in range(self.n_items):
+                            if {item2, item3}.intersection({item, self.user_buying_dict[u][j-1][0]}) == set():
+                                self.items_sequentials00[item2][item3] += 1
+                            counter += 1
+        print("Actual time in seconds: ", round(time.time() - start_time, 0))
+
+        self.items_sequential_llr = root_loglikelihood_ratio(self.items_sequentials11,
+                                                             self.items_sequentials01,
+                                                             self.items_sequentials10,
+                                                             self.items_sequentials00)
+
+        self._sequential_time = time.time()
 
     def get_cooccurred_items(self, item, maxi=20):
-        if self._observations_time > self._cooccurence_time:
-            self.compute_cooccurences()
-        cooc_items = self.items_cooccurence11[item]
+        if self._observations_time > self._cooccurrence_time:
+            self.compute_cooccurrences()
+        cooc_items = self.items_cooccurrence11[item]
         oo = [(it, oc) for it, oc in enumerate(cooc_items)]
         return sorted(oo, key=lambda t: t[1], reverse=True)[:maxi]
 
     def get_llr_items(self, item, maxi=20):
-        if self._observations_time > self._cooccurence_time:
-            self.compute_cooccurences()
+        if self._observations_time > self._cooccurrence_time:
+            self.compute_cooccurrences()
         llr_item = self.items_llr[item]
         oo = [(it, oc) for it, oc in enumerate(llr_item)]
-        return sorted(oo, key=lambda t: t[1], reverse=False)[:maxi]
+        return sorted(oo, key=lambda t: t[1], reverse=True)[:maxi]
 
-    def export_similars(self, filenames=tuple(["similar_items.csv", "similar_users.csv"])):
+    def get_sequentials_llr_items(self, item, maxi=20):
+        if self._observations_time > self._sequential_time:
+            self.compute_sequentials()
+        llr_item = self.items_sequential_llr[item]
+        oo = [(it, oc) for it, oc in enumerate(llr_item)]
+        return sorted(oo, key=lambda t: t[1], reverse=True)[:maxi]
+
+    def export_similars(self, filenames=tuple(["similar_items.csv", "similar_users.csv"]), maxi=20):
         """
 
         :param filenames:
-        :param separator:
         :return:
         """
         with open(filenames[0], 'w') as f:
             for ni in range(self.n_items):
                 f.write(str(ni) + "\t" +
-                        ", ".join([str(i) for i in self.get_similar_items(ni)][:10]) + "\n"
+                        ", ".join([str(i) for i in self.get_similar_items(ni)][:maxi]) + "\n"
                         )
 
         with open(filenames[1], 'w') as f:
             for ni in range(self.n_users):
                 f.write(str(ni) + "\t" +
-                        ", ".join([str(i) for i in self.get_similar_users(ni)][:10]) + "\n"
+                        ", ".join([str(i) for i in self.get_similar_users(ni)][:maxi]) + "\n"
                         )
 
     @staticmethod
@@ -596,7 +663,7 @@ s.run()
                     features_values = np.random.random(features)
                     f = np.zeros(features)
                     for i, r in enumerate(f):
-                        # not the most important feature, which is the first element
+                        # now the most important feature, which is the first element
                         # in features_order, gets a bigger value and so on
                         f[features_order[i]] = features_values[i] / (i + 1)
             population.append({"features": f, "similarities": {}})
