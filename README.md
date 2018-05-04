@@ -81,7 +81,7 @@ s.run(1000)
 # print the items similar to item 1
 s.get_similar_items(1)
 # compute the co-occurrence matrices (needed for LLR)
-s.compute_cooccurences()
+s.compute_cooccurrences()
 # compute the "sequentiality" matrix (needed for sequential LLR)
 s.compute_sequentials()
 # get the most similar items to item 1 according to...
@@ -91,21 +91,6 @@ s.get_sequentials_llr_items(1)
 s.get_cooccurred_items(1)
 # ...LLR on co-occurrence
 s.get_llr_items(1)
-```
-
-
-
-
 # export the data
 s.export(separator=',', print_timestamp=False)
 ```
-
-Both users and items follow a simple power-law distribution:
-
-* Items are "sold" with frequency `1/item_id^decay`
-* Users "buy" with frequency `1/user_id^decay`
-
-## Similarities
-
-`bias` in [0, 1] tells how similar users and items influence each other.
-
