@@ -492,7 +492,7 @@ s.run()
                 try:
                     f.write(str(ui) + separator + separator.join([str(f) for f in u['features']]) + "\n")
                 except TypeError:  # u['feature'] not iterable (0)
-                    f.write(str(ui))
+                    f.write(str(ui) + "\n")
         
         with open(filenames[0], 'w') as f:
             try:
