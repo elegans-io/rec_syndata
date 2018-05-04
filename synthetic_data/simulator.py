@@ -267,6 +267,7 @@ s.run()
 
     def _sell_and_tout(self, user_id, previous_item=None):
         """Sell an item and, if successful, increase the item probability of being sold
+        #TODO it would slow down a lot, but [weights] could be recomputed as a linear combination of all weights taken not just from one previous_item, but from all previous items, weighted with time (older weight less)
         :param int user_id: user who is buying (needed for no-reselling)
         :param int previous_item: item in the previous observation (if not item_id=None)
         :return Tuple(item_id, p):  item chosen and the probability we had to get this item
