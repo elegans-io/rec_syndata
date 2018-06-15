@@ -107,13 +107,15 @@ s.run()
                                           population_name="item")
 
         print("INFO: creating user probability weights")
+        # probability of getting a user given a previous user
         self._user_probability_weights = self.get_probability_weights(population=self.users,
-                                                                      population_name="user",
+                                                                      cache_name="user",
                                                                       distribution=users_distribution)
 
         print("INFO: creating item probability weights")
+        # probability of getting a item given a previous item
         self._item_probability_weights = self.get_probability_weights(population=self.items,
-                                                                      population_name="item",
+                                                                      cache_name="item",
                                                                       distribution=items_distribution)
 
         # track times
@@ -155,7 +157,7 @@ s.run()
         self.items_sequentials00 = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
         self.items_sequential_llr = np.zeros(self.n_items * self.n_items).reshape((self.n_items, self.n_items))
 
-    def get_probability_weights(self, population, population_name, distribution):
+    def get_probability_weights(self, population, cache_name, distribution):
         """Just a wrapper to _make_probability_weights in case we don't use cache"""
         if self.read_cache_dir is not None:
             probability_weights = pickle.load(open(str(self.read_cache_dir) + "/" + str(population_name) +
@@ -163,12 +165,14 @@ s.run()
             assert len(probability_weights) == len(population)
             return probability_weights
         else:
-            return self._make_probability_weights(population, population_name, distribution)
+            return self._make_probability_weights(population, cache_name, distribution)
 
-    def _make_probability_weights(self, population, population_name, distribution):
+    def _make_probability_weights(self, population, cache_name, distribution):
         """Given an individual (eg users or items), get the probability of getting any
         other one according to a Zipf or uniform distribution.
-        :par distribution
+        :par population: P(P1 | P2)
+        :par cache_name: the name
+        :par distribution: 'zipf' or 'uniform'
         :return List(List): [i][j] probability of j given i
         """
 
@@ -189,7 +193,7 @@ s.run()
         for p in range(n):
             # ETA...
             if n > 100:
-                steps = int(len(population)/10)
+                steps = int(n/10)
                 if p % steps == 0 and p != 0:
                     pc = p // steps 
                     print("INFO: %s0 percent of the probability weights produced (%s)" % (pc, p))
@@ -222,7 +226,7 @@ s.run()
                 os.mkdir(self.save_cache_dir)
             except FileExistsError:
                 raise FileExistsError("A cache directory with this name already exists, pls delete it")
-            cache_file = str(self.save_cache_dir) + "/" + str(population_name) + "/" + "probability_weights.pickle"
+            cache_file = str(self.save_cache_dir) + "/" + str(cache_name) + "/" + "probability_weights.pickle"
             pickle.dump(probability_weights, open(cache_file, 'wb'))
 
         return probability_weights
@@ -267,7 +271,10 @@ s.run()
 
     def _sell_and_tout(self, user_id, previous_item=None):
         """Sell an item and, if successful, increase the item probability of being sold
-        #TODO it would slow down a lot, but [weights] could be recomputed as a linear combination of all weights taken not just from one previous_item, but from all previous items, weighted with time (older weight less)
+        #TODO/1 [weights] could be recomputed as a linear combination
+        #TODO/1 of all weights taken not just from one previous_item,
+        #TODO/1 but from all previous items, weighted with time (older weight less).
+        #TODO/2 Il tout deve aumentare la probabilità del libro solo per gli utenti simili...
         :param int user_id: user who is buying (needed for no-reselling)
         :param int previous_item: item in the previous observation (if not item_id=None)
         :return Tuple(item_id, p):  item chosen and the probability we had to get this item
@@ -296,6 +303,10 @@ s.run()
 
     def run(self, n_observations: int) -> None:
         """Create observations.
+
+        * If a user hasn't bought anything yet, and is buying smt because
+          influenced by the previous_user, it will buy an item similar
+          to the one bought by such previous_user
 
         :param n_observations:
         :return: List[Dict]
@@ -329,10 +340,14 @@ s.run()
                 break
 
             # new user given the previous user:
+            previous_user = user
             (user, p_u) = self._random_user(previous_user=user)
             # if user has already bought something, get the item considering the similarity
             # with the last bought item by this user.
             previous_item = self.user_buying_dict.get(user, [(None, None)])[-1][0]
+            # If it's the first item and previous_user != None, be influenced by that user
+            if previous_user is not None and previous_item is None:
+                previous_item = self.user_buying_dict.get(previous_user, [(None, None)])[-1][0]
             (new_item, p_i) = self._sell_and_tout(user, previous_item)
             if new_item == -1:  # buyer bought all items
                 over_buyers.add(user)
