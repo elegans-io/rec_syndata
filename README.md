@@ -76,7 +76,7 @@ from synthetic_data import Simulator
 # and items with 10 continuous features.
 # Users do not influence each other (tout is false), items do.
 # Both start from a uniform distribution of being chosen.
-s = Simulator(n_users=100, user_features=0, n_items=50, item_features=10, bias=10.0, users_distribution="uniform", items_distribution="uniform", tout=False)
+s = Simulator(n_users=100, user_features=10, n_items=50, item_features=10, bias=10.0, users_distribution="uniform", items_distribution="uniform", tout=False)
 s.run(1000)
 # print the items similar to item 1
 s.get_similar_items(1)
